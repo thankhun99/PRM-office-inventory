@@ -1,0 +1,137 @@
+// src/components/admin/RequestManager.jsx (ฉบับเสถียร แก้ไขแล้ว)
+
+import { useState, useEffect } from 'react';
+import { supabase } from '../../supabaseClient';
+
+const StatusBadge = ({ status }) => {
+  const baseStyle = { color: 'white', padding: '0.2rem 0.5rem', borderRadius: '12px', fontSize: '0.8rem', textTransform: 'capitalize' };
+  let style = {};
+  switch (status) {
+    case 'pending': style = { ...baseStyle, backgroundColor: '#faad14' }; break;
+    case 'backorder': style = { ...baseStyle, backgroundColor: '#108ee9' }; break;
+    case 'new': style = { ...baseStyle, backgroundColor: '#28a745' }; break;
+    case 'approved': style = { ...baseStyle, backgroundColor: 'green' }; break;
+    case 'rejected': style = { ...baseStyle, backgroundColor: 'red' }; break;
+    default: style = { ...baseStyle, backgroundColor: '#8c8c8c' };
+  }
+  return <span style={style}>{status}</span>;
+};
+
+export const RequestManager = () => {
+  const [loading, setLoading] = useState(true);
+  const [requests, setRequests] = useState([]);
+
+  const getActiveRequests = async () => {
+    setLoading(true);
+    try {
+      const [stockResult, procurementResult] = await Promise.all([
+        supabase.from('detailed_requests').select('*').in('status', ['pending', 'backorder']),
+        supabase.from('detailed_procurement_requests').select('*').eq('status', 'new')
+      ]);
+
+      if (stockResult.error) throw stockResult.error;
+      if (procurementResult.error) throw procurementResult.error;
+
+      const stockRequests = stockResult.data || [];
+      const procurementRequests = procurementResult.data || [];
+
+      const formattedStock = stockRequests.map(r => ({ ...r, type: 'เบิกสต็อก' }));
+      const formattedProcure = procurementRequests.map(r => ({...r, type: 'ขอจัดหาใหม่', quantity_requested: r.quantity }));
+      
+      const allRequests = [...formattedStock, ...formattedProcure];
+      allRequests.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      setRequests(allRequests);
+    } catch (error) {
+      console.error("Error fetching active requests:", error);
+      alert("เกิดข้อผิดพลาดในการดึงข้อมูล: " + error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    getActiveRequests();
+  }, []);
+
+  const handleUpdateStockRequest = async (requestId, newStatus) => {
+    const { error } = await supabase.from('requests').update({ status: newStatus }).eq('id', requestId);
+    if (error) {
+      alert(error.message);
+    } else {
+      alert('อัปเดตสถานะสำเร็จ!');
+      getActiveRequests(); // <-- โหลดข้อมูลใหม่ทั้งหมดหลังสำเร็จ
+    }
+  };
+
+  const handleApproveProcurement = async (procurementId) => {
+    if (window.confirm('ยืนยันการอนุมัติจัดหา?')) {
+        const { error } = await supabase.rpc('approve_procurement_request', { procurement_id: procurementId });
+        if (error) {
+            alert(error.message);
+        } else {
+            alert('อนุมัติคำขอจัดหาสำเร็จ!');
+            getActiveRequests(); // <-- โหลดข้อมูลใหม่ทั้งหมดหลังสำเร็จ
+        }
+    }
+  };
+
+  const handleRejectProcurement = async (procurementId) => {
+    if (window.confirm('คุณต้องการปฏิเสธคำขอจัดหานี้ใช่หรือไม่?')) {
+        const { error } = await supabase.from('procurement_requests').update({ status: 'rejected' }).eq('id', procurementId);
+        if (error) {
+            alert(error.message);
+        } else {
+            alert('ปฏิเสธคำขอเรียบร้อย');
+            getActiveRequests(); // <-- โหลดข้อมูลใหม่ทั้งหมดหลังสำเร็จ
+        }
+    }
+  };
+
+  if (loading) return <p>Loading requests...</p>;
+
+  return (
+    <div>
+      <h2>คำขอที่ต้องดำเนินการ (ทั้งหมด)</h2>
+      {requests.length === 0 ? <p>ไม่มีคำขอที่ต้องดำเนินการ</p> : (
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ borderBottom: '2px solid #ddd', textAlign: 'left' }}>
+              <th>วันที่ขอ</th>
+              <th>ประเภท</th>
+              <th>อุปกรณ์/รายละเอียด</th>
+              <th>ผู้ขอ</th>
+              <th>จำนวน</th>
+              <th>สถานะ</th>
+              <th>จัดการ</th>
+            </tr>
+          </thead>
+          <tbody>
+            {requests.map(request => (
+              <tr key={`${request.type}-${request.id}`}>
+                <td>{new Date(request.created_at).toLocaleString('th-TH')}</td>
+                <td>{request.type}</td>
+                <td>{request.item_name}</td>
+                <td>{request.requester_name || 'N/A'}</td>
+                <td>{request.quantity_requested}</td>
+                <td><StatusBadge status={request.status} /></td>
+                <td style={{ display: 'flex', gap: '0.5rem' }}>
+                  {request.type === 'เบิกสต็อก' ? (
+                    <>
+                      <button onClick={() => handleUpdateStockRequest(request.id, 'approved')}>อนุมัติ</button>
+                      <button onClick={() => handleUpdateStockRequest(request.id, 'rejected')}>ปฏิเสธ</button>
+                    </>
+                  ) : ( // ประเภท 'ขอจัดหาใหม่'
+                    <>
+                      <button onClick={() => handleApproveProcurement(request.id)}>อนุมัติจัดหา</button>
+                      <button onClick={() => handleRejectProcurement(request.id)}>ปฏิเสธ</button>
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+};
